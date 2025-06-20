@@ -41,7 +41,7 @@ except ValueError:
 print(f"Bot 全局人设已设定: {global_persona[:100]}...")
 
 # --- AI 模型配置 ---
-MODEL_NAME = "gemini-1.5-flash-preview-0514"
+MODEL_NAME = "gemini-2.5-flash-preview-05-20"
 ai_client = AsyncOpenAI(
     base_url=os.getenv('OPENAI_BASE_URL', "https://eseeehin-hajimi.hf.space/v1"),
     api_key=os.getenv('OPENAI_API_KEY'), # 如果没有API Key，这会是None，代码也能正常处理
