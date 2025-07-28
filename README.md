@@ -1,15 +1,19 @@
 ---
-title: 米尔可多功能Bot
-emoji: 🤖
+title: Milky Bot
+emoji: 🥛
 colorFrom: blue
-colorTo: indigo
+colorTo: pink
 sdk: docker
-sdk_version: "1.0"
-app_file: bot.py
+app_port: 7860
 pinned: false
+secrets:
+  - DISCORD_BOT_TOKEN
+  - BOT_OWNER_ID
+  - HF_TOKEN
+  - HF_DATA_REPO_ID
 ---
 
-# 🤖 米尔可 (Milyk) - 智能Discord机器人
+# Milky Bot - 智能 Discord 机器人
 
 一个功能丰富的Discord机器人，具备AI对话、自动反应、用户分析、数据管理等多种功能。
 
@@ -265,4 +269,4 @@ docker run -e BOT_TOKEN=your_token -e BOT_OWNER_ID=your_id milyk-bot
 
 ---
 
-**米尔可** - 让Discord聊天更智能、更有趣！ 💕
+**Milky** - 让Discord聊天更智能、更有趣！ 💕
