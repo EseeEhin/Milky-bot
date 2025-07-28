@@ -9,8 +9,12 @@ services:
     rootDir: .
     envVars:
       - key: DISCORD_BOT_TOKEN
+        value: ""
       - key: BOT_OWNER_ID
+        value: ""
       - key: HF_TOKEN
+        value: ""
       - key: HF_DATA_REPO_ID
+        value: ""
       - key: PYTHON_VERSION
         value: "3.11.4" 
