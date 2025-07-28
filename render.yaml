@@ -6,15 +6,11 @@ services:
     startCommand: "python -u bot.py"
     repo: https://github.com/EseeEhin/Milky-bot
     branch: main
-    rootDir: ./模块化
+    rootDir: .
     envVars:
       - key: DISCORD_BOT_TOKEN
-        fromSecret: true
       - key: BOT_OWNER_ID
-        fromSecret: true
       - key: HF_TOKEN
-        fromSecret: true
       - key: HF_DATA_REPO_ID
-        fromSecret: true
       - key: PYTHON_VERSION
-        value: 3.11.4 
+        value: "3.11.4" 
