@@ -1,7 +1,0 @@
-discord.py
-python-dotenv
-google-generativeai
-huggingface_hub
-Flask
-requests
-aiofiles
