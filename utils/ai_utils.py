@@ -50,7 +50,7 @@ async def call_ai(messages: list, temperature=0.8, max_tokens=2048, context_for_
     if not GEMINI_API_KEYS:
         print("AI调用失败：没有配置GEMINI_API_KEYS。")
         return INTERNAL_AI_ERROR_SIGNAL
-        
+    # 恢复聊天记忆力，允许传递历史上下文
     gemini_messages, system_instruction = convert_to_gemini_format(messages)
     
     max_retries = len(GEMINI_API_KEYS) + 1
@@ -58,7 +58,6 @@ async def call_ai(messages: list, temperature=0.8, max_tokens=2048, context_for_
 
     for attempt in range(max_retries):
         if ai_consecutive_failures >= AI_FAILURE_THRESHOLD:
-            # ... (错误阈值DM逻辑) ...
             return INTERNAL_AI_ERROR_SIGNAL
 
         api_key_to_use = GEMINI_API_KEYS[current_gemini_key_index]
@@ -69,7 +68,6 @@ async def call_ai(messages: list, temperature=0.8, max_tokens=2048, context_for_
                 safety_settings=DEFAULT_SAFETY_SETTINGS,
                 system_instruction=system_instruction
             )
-            
             response = await model.generate_content_async(
                 contents=gemini_messages,
                 generation_config=genai.types.GenerationConfig(
@@ -77,7 +75,8 @@ async def call_ai(messages: list, temperature=0.8, max_tokens=2048, context_for_
                     temperature=temperature
                 )
             )
-
+            # 每次请求后切换key
+            current_gemini_key_index = (current_gemini_key_index + 1) % len(GEMINI_API_KEYS)
             if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 content = ''.join(part.text for part in response.candidates[0].content.parts if hasattr(part, 'text'))
             else:
@@ -86,26 +85,20 @@ async def call_ai(messages: list, temperature=0.8, max_tokens=2048, context_for_
                     reason = response.candidates[0].finish_reason.name
                 elif response.prompt_feedback:
                     reason = f"Prompt Feedback: {response.prompt_feedback.block_reason.name}"
-                
                 raise ValueError(f"响应中不含有效内容部分。完成原因: {reason}")
-
             if content.strip():
                 ai_consecutive_failures = 0
                 return content.strip()
             else:
                 raise ValueError("AI返回了空字符串。")
-
         except (ValueError, genai.types.BlockedPromptException, genai.types.StopCandidateException) as e:
             err_to_owner_on_final_failure = f"Gemini核心逻辑错误(尝试{attempt+1}): {e.__class__.__name__} - {e}"
         except (DeadlineExceeded, Aborted, InternalServerError, ResourceExhausted, ServiceUnavailable, GoogleAPIError) as e:
             err_to_owner_on_final_failure = f"Gemini API网络/配额错误(尝试{attempt+1}): {e.__class__.__name__} - {e}"
         except Exception as e:
             err_to_owner_on_final_failure = f"未知AI调用错误(尝试{attempt+1}): {e.__class__.__name__} - {e}"
-
         print(f"警告: {err_to_owner_on_final_failure}")
-        current_gemini_key_index = (current_gemini_key_index + 1) % len(GEMINI_API_KEYS)
         await asyncio.sleep(random.uniform(1.5, 3.0))
-
     if _send_dm_to_owner_func:
         await _send_dm_to_owner_func(f"【🚨 AI故障 ({context_for_error_dm} - 多次重试失败)】\n{err_to_owner_on_final_failure}")
     return INTERNAL_AI_ERROR_SIGNAL

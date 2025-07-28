@@ -3,14 +3,15 @@ import discord
 from discord.ext import commands
 import time
 import os
+from datetime import datetime
 from utils import ai_utils, data_manager
 
 class GeneralCog(commands.Cog, name="通用指令"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="ping", description="检查米尔可的各项服务状态及延迟。")
-    async def ping(self, ctx: commands.Context):
+    @commands.hybrid_command(name="服务状态", description="检查米尔可的各项服务状态及延迟。")
+    async def servicestatus(self, ctx: commands.Context):
         """增强版的ping指令，检查多个服务状态"""
         await ctx.defer()
         

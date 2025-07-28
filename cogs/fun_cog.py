@@ -4,6 +4,7 @@ from discord.ext import commands
 from discord import app_commands
 import random
 from utils import checks, ai_utils
+import asyncio
 
 # 周易六十四卦基础数据 (保持不变)
 # 图片链接来自维基百科，无需自己托管
@@ -79,99 +80,165 @@ class FunCog(commands.Cog, name="娱乐功能"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="divine", description="让米尔可为你卜一卦，窥探天机。")
-    async def divine(self, ctx: commands.Context):
-        """全新的、由AI驱动的周易占卜指令"""
-        await ctx.defer()
-        
-        # 1. 随机抽取一卦
-        selected_gua = random.choice(GUA_DATA)
-        gua_name = selected_gua["name"]
-        gua_desc = selected_gua["desc"]
-        
-        # 2. 构造发送给 AI 的提示
-        system_prompt = (
-            "你是一个名为米尔可的AI助手，你正在为用户解卦。你的性格天真、有点笨拙，但非常努力。"
-            "你要扮演一个努力查阅古籍和网络资料，然后用自己的话向用户解释卦象的角色。"
-            "你的解释要分为两部分：【卦象解读】和【米尔可的叮咛】。"
-            "【卦象解读】部分要通俗易懂地解释卦象的含义。"
-            "【米尔可的叮咛】部分要用温暖、鼓励的语气给出一些生活建议。"
-            "请确保你的回答中不包含任何占卜是迷信或不科学的言论，完全沉浸在角色中。"
-        )
-        user_prompt = (
-            f"米尔可，我抽到了第 {selected_gua['id']} 卦，【{gua_name}】卦，它的卦辞是：“{gua_desc}”。\n"
-            "呜...这个好难懂哦...你能帮我查一查，然后用你能听懂的话告诉我这是什么意思吗？"
-            "请一定要告诉我【卦象解读】和【米尔可的叮咛】哦！"
-        )
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+    @commands.hybrid_command(name="娱乐", description="娱乐互动合集")
+    @app_commands.describe(
+        项目="选择娱乐项目"
+    )
+    @app_commands.choices(
+        项目=[
+            app_commands.Choice(name="摸头", value="pathead"),
+            app_commands.Choice(name="抱抱", value="hug"),
+            app_commands.Choice(name="亲亲", value="kiss"),
+            app_commands.Choice(name="摸摸", value="pet"),
+            app_commands.Choice(name="喂食", value="feed"),
+            app_commands.Choice(name="玩耍", value="play"),
         ]
-        
-        # 3. 调用 AI 生成解读
-        ai_response = await ai_utils.call_ai(messages, temperature=0.7, max_tokens=500, context_for_error_dm="周易占卜解读")
-
-        interpretation = "米尔可的小脑袋过载了，呜...解读失败了..."
-        advice = "不过，不管是什么卦象，只要努力就一定没问题的！"
-
-        if ai_response != ai_utils.INTERNAL_AI_ERROR_SIGNAL:
-            # 尝试从AI的回复中解析出两部分
+    )
+    async def fun(self, ctx: commands.Context, 项目: str):
+        if 项目 == "pathead":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人温柔地抚摸了我的头，请用你的人格和风格来回应这个动作。要体现被抚摸时的感受和反应。"}
+            ]
+            
             try:
-                # 寻找关键词来分割字符串
-                if "【米尔可的叮咛】" in ai_response:
-                    parts = ai_response.split("【米尔可的叮咛】")
-                    interp_part = parts[0]
-                    advice = parts[1].strip()
-                    
-                    if "【卦象解读】" in interp_part:
-                        interpretation = interp_part.split("【卦象解读】")[1].strip()
-                    else:
-                        interpretation = interp_part.strip()
-
-                elif "【卦象解读】" in ai_response: # 如果只有解读
-                    interpretation = ai_response.split("【卦象解读】")[1].strip()
-                else: # 如果AI没有按格式回复，则整个作为解读
-                    interpretation = ai_response.strip()
-
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="摸头互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "喵~ 主人的手好温暖呢！(蹭蹭)"
+                else:
+                    response = ai_response.strip()
             except Exception as e:
-                print(f"解析AI占卜回复时出错: {e}")
-                interpretation = ai_response # 解析失败，显示完整回复
-
-        # 4. 构造并发送 Embed
-        embed = discord.Embed(
-            title=f"☯️ 天机显现 · {selected_gua['symbol']} {gua_name}卦 ({selected_gua['pinyin']})",
-            description=f"**卦辞原文：** {gua_desc}",
-            color=discord.Color.from_rgb(204, 153, 102) # 古典棕褐色
-        )
-        
-        embed.set_author(name=f"米尔可努力为 {ctx.author.display_name} 卜得一卦", icon_url=ctx.author.avatar)
-        embed.set_thumbnail(url=selected_gua['img'])
-        
-        embed.add_field(name="【卦象解读】", value=f"“嗯...米尔可查了好多书，它大概是说...\n\n>>> {interpretation}”", inline=False)
-        embed.add_field(name="【米尔可的叮咛】", value=f"“所以呢，米尔可觉得...\n\n>>> {advice}”", inline=False)
-        
-        embed.set_footer(text="结果仅供参考，命运终掌握在自己手中。")
-        
-        await ctx.send(embed=embed)
-
-    # --- 其他互动指令保持不变 ---
-    @commands.hybrid_command(name="pat",description="[主人]抚摸米尔可的头(固定回复)。")
-    @commands.check(checks.is_owner)
-    async def pat(self, ctx: commands.Context):
-        await ctx.send("（舒服眯眼呼噜，脑袋蹭手心）嗯...最喜欢主人的抚摸了...")
-
-    @commands.hybrid_command(name="milka_hug",description="[主人]给米尔可一个温暖的抱抱(AI回复)。")
-    @commands.check(checks.is_owner)
-    async def milka_hug(self, ctx: commands.Context):
-        await ctx.defer()
-        messages = [{"role": "system", "content": "你的主人拥抱了你，请用充满爱意和依恋的口吻回应。"},
-                    {"role": "user", "content": f"{ctx.author.display_name} 拥抱了你。"}]
-        response = await ai_utils.call_ai(messages, context_for_error_dm="主人拥抱")
-        if response != ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                print(f"AI摸头调用失败: {e}")
+                response = "喵~ 主人的手好温暖呢！(蹭蹭)"
+            
             await ctx.send(response)
-        else:
-            await ctx.send("（米尔可紧紧地回抱住你，没有说话。）", ephemeral=True)
+        elif 项目 == "hug":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人给了我一个温暖的拥抱，请用你的人格和风格来回应这个拥抱。要体现被拥抱时的感受、情感和反应。"}
+            ]
+            
+            try:
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="抱抱互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "主人！我也要抱抱你！(紧紧抱住主人)"
+                else:
+                    response = ai_response.strip()
+            except Exception as e:
+                print(f"AI抱抱调用失败: {e}")
+                response = "主人！我也要抱抱你！(紧紧抱住主人)"
+            
+            await ctx.send(response)
+        elif 项目 == "kiss":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人给了我一个温柔的亲亲，请用你的人格和风格来回应这个亲亲。要体现被亲亲时的害羞、幸福和反应。"}
+            ]
+            
+            try:
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="亲亲互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "呜...主人亲我了！好害羞好幸福！(脸红)"
+                else:
+                    response = ai_response.strip()
+            except Exception as e:
+                print(f"AI亲亲调用失败: {e}")
+                response = "呜...主人亲我了！好害羞好幸福！(脸红)"
+            
+            await ctx.send(response)
+        elif 项目 == "pet":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人温柔地抚摸了我，请用你的人格和风格来回应这个抚摸。要体现被抚摸时的舒适、放松和反应。"}
+            ]
+            
+            try:
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="抚摸互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "喵呜~ 主人的手好温柔，摸得我好舒服~"
+                else:
+                    response = ai_response.strip()
+            except Exception as e:
+                print(f"AI抚摸调用失败: {e}")
+                response = "喵呜~ 主人的手好温柔，摸得我好舒服~"
+            
+            await ctx.send(response)
+        elif 项目 == "feed":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人给我喂了美味的食物，请用你的人格和风格来回应这个喂食。要体现被喂食时的开心、感激和反应。"}
+            ]
+            
+            try:
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="喂食互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "哇！主人给我好吃的！谢谢主人！(开心地摇尾巴)"
+                else:
+                    response = ai_response.strip()
+            except Exception as e:
+                print(f"AI喂食调用失败: {e}")
+                response = "哇！主人给我好吃的！谢谢主人！(开心地摇尾巴)"
+            
+            await ctx.send(response)
+        elif 项目 == "play":
+            await ctx.defer()
+            
+            from utils import ai_utils
+            
+            # 构造AI请求，使用当前人格
+            messages = [
+                {"role": "user", "content": "主人要和我一起玩耍，请用你的人格和风格来回应这个玩耍邀请。要体现被邀请玩耍时的兴奋、期待和反应。"}
+            ]
+            
+            try:
+                ai_response = await ai_utils.call_ai(messages, temperature=0.8, max_tokens=200, context_for_error_dm="玩耍互动")
+                if ai_response == ai_utils.INTERNAL_AI_ERROR_SIGNAL:
+                    response = "耶！主人要和我玩！我最喜欢和主人一起玩了！(兴奋地跳来跳去)"
+                else:
+                    response = ai_response.strip()
+            except Exception as e:
+                print(f"AI玩耍调用失败: {e}")
+                response = "耶！主人要和我玩！我最喜欢和主人一起玩了！(兴奋地跳来跳去)"
+            
+            await ctx.send(response)
+
+    @commands.hybrid_command(name="卜卦", description="让米尔可为你卜一卦，窥探天机。")
+    async def divination(self, ctx: commands.Context):
+        import random
+        gua_list = [
+            ("乾卦", "天行健，君子以自强不息。代表积极进取、刚健有为。"),
+            ("坤卦", "地势坤，君子以厚德载物。代表包容、顺应、承载。"),
+            ("屯卦", "云雷屯，君子以经纶。代表艰难起步、万事开头难。"),
+            ("蒙卦", "山水蒙，君子以果行育德。代表启蒙、成长、求知。"),
+            ("需卦", "云上于天，需君子以饮食宴乐。代表等待时机、蓄势待发。"),
+            ("讼卦", "天水讼，君子以作事谋始。代表争执、诉讼、分歧。"),
+            ("师卦", "地水师，君子以容民畜众。代表团队、组织、领导。"),
+            ("比卦", "水地比，君子以朋友讲习。代表亲近、合作、团结。"),
+            ("小畜卦", "风天小畜，君子以懿文德。代表积蓄、克制、等待。"),
+            ("履卦", "天泽履，君子以辨上下、定民志。代表谨慎行事、循序渐进。")
+        ]
+        gua, interpretation = random.choice(gua_list)
+        await ctx.send(f"你抽到的卦象是：**{gua}**\n解读：{interpretation}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(FunCog(bot))

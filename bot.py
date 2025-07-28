@@ -80,6 +80,18 @@ async def on_ready():
         print(f'同步指令失败: {e}')
     print("米尔可准备就绪！")
 
+@bot.event
+async def on_command_error(ctx, error):
+    try:
+        from cogs.admin_cog import AdminCog
+        for cog in bot.cogs.values():
+            if isinstance(cog, AdminCog):
+                await cog.send_log(ctx.guild.id if ctx.guild else 0, "error", f"命令错误: {error}\n用户: {ctx.author} ({ctx.author.id})\n命令: {ctx.command}", ctx.author)
+                break
+    except Exception as e:
+        print(f"全局错误日志记录失败: {e}")
+    await ctx.send(f"❌ 命令执行出错: {error}", ephemeral=True)
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
