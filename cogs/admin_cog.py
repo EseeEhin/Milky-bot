@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Literal, Optional, ClassVar, Any
 from enum import Enum
-from utils import checks, data_manager
+from utils import checks, data_manager, emoji_manager
 import aiofiles
 import tempfile
 from utils import ai_utils
@@ -53,20 +53,10 @@ class AdminCog(commands.Cog, name="管理工具"):
         env_persona = os.getenv('BOT_PERSONA', '')
         if env_persona:
             self.personas['环境变量人格'] = env_persona
-        # 默认人格
-        self.current_persona_name = '环境变量人格' if '环境变量人格' in self.personas else None
-        self.set_global_persona(self.current_persona_name)
-
-    def set_global_persona(self, name):
-        import utils.ai_utils as ai_utils
-        if name and name in self.personas:
-            ai_utils.global_persona = self.personas[name]
-            self.current_persona_name = name
-            data_manager.data["current_persona"] = self.personas[name]
-        else:
-            ai_utils.global_persona = os.getenv('BOT_PERSONA', '你是一个智能AI助手。')
-            self.current_persona_name = '环境变量人格'
-            data_manager.data["current_persona"] = ai_utils.global_persona
+        # 设置默认激活的人格
+        active_persona = data_manager.get_active_persona()
+        if not active_persona:
+            data_manager.set_active_persona('环境变量人格')
 
     @commands.hybrid_command(name="ping", description="测试AI延迟、与Discord的延迟和趣味信息。")
     async def ping(self, ctx: commands.Context):
@@ -83,9 +73,13 @@ class AdminCog(commands.Cog, name="管理工具"):
         from utils import ai_utils
         await ctx.defer(ephemeral=True)
         mode = "发情模式" if getattr(self, 'is_in_heat_mode', False) else "常规待命模式"
+        
+        # 通过动态构建函数获取当前完整的系统指令
+        current_persona_full_instruction = ai_utils.build_system_instruction()
+        
         emb = discord.Embed(title="🔧 米尔可内部状态报告", color=discord.Color.blue())
         emb.add_field(name="🤖 运行模式", value=mode, inline=True)
-        emb.add_field(name="💬 当前人格", value=ai_utils.global_persona[:50] + "..." if len(ai_utils.global_persona) > 50 else ai_utils.global_persona, inline=True)
+        emb.add_field(name="💬 当前人格", value=current_persona_full_instruction[:1000] + "..." if len(current_persona_full_instruction) > 1000 else current_persona_full_instruction, inline=False)
         emb.add_field(name="⏰ 运行状态", value="✅ 正常运行", inline=True)
         await ctx.send(embed=emb, ephemeral=True)
 
@@ -94,28 +88,49 @@ class AdminCog(commands.Cog, name="管理工具"):
     @commands.check(checks.is_owner)
     async def heatmode(self, ctx: commands.Context, state: Literal["开启", "关闭"]):
         """切换热恋模式"""
-        self.is_in_heat_mode = (state.lower() == '开启')
-        msg = "遵命，主人...身体...开始奇怪了...（脸红急促...）" if self.is_in_heat_mode else "呜...好多了，谢谢主人...（燥热退去，眼神清明...）"
-        await ctx.send(msg)
+        await ctx.defer(ephemeral=True)
+        enable = (state == "开启")
+        await data_manager.set_heat_mode(enable)
+        
+        msg = "遵命，主人...身体...开始奇怪了...（脸红急促...）" if enable else "呜...好多了，谢谢主人...（燥热退去，眼神清明...）"
+        await ctx.send(msg, ephemeral=True)
+        await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"{'开启' if enable else '关闭'}热恋模式 by {ctx.author} ({ctx.author.id})", ctx.author)
 
     @commands.hybrid_command(name="短篇幅模式", description="[主人] 开启或关闭AI短篇幅连续回复模式")
     @app_commands.describe(state="开启或关闭")
     @commands.check(checks.is_owner)
     async def short_reply_mode(self, ctx: commands.Context, state: Literal["开启", "关闭"]):
         """开启或关闭短篇幅模式"""
+        await ctx.defer(ephemeral=True)
         from utils import data_manager
         enable = (state == "开启")
-        data_manager.set_short_reply_mode(enable)
+        await data_manager.set_short_reply_mode(enable)
         await ctx.send(f"{'✅ 已开启' if enable else '❎ 已关闭'}短篇幅模式。", ephemeral=True)
         # 日志
         await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"{'开启' if enable else '关闭'}短篇幅模式 by {ctx.author} ({ctx.author.id})", ctx.author)
 
-    @commands.hybrid_group(name="admin", description="[主人] 核心管理工具")
+    @commands.hybrid_command(name="字数要求", description="[主人] 通过提示词引导AI的回复字数")
+    @app_commands.describe(requirement="设置字数要求（如 '200字', '一段话'），输入 '无' 或 '清除' 来移除要求")
     @commands.check(checks.is_owner)
-    async def admin(self, ctx: commands.Context):
-        """管理指令的根命令，本身不执行任何操作。"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send("主人，请选择管理操作。例如 `/admin points` 或 `/admin checkin`。", ephemeral=True)
+    async def word_count_request(self, ctx: commands.Context, requirement: Optional[str] = None):
+        """设置或查看通过提示词引导的AI回复字数要求"""
+        await ctx.defer(ephemeral=True)
+        from utils import data_manager
+        if requirement is None:
+            current_request = data_manager.get_word_count_request()
+            if current_request:
+                await ctx.send(f"ℹ️ 当前AI回复字数要求为: `{current_request}`。", ephemeral=True)
+            else:
+                await ctx.send("ℹ️ 当前没有设置AI回复字数要求。", ephemeral=True)
+        else:
+            if requirement.lower() in ["无", "清除", "none", "clear"]:
+                await data_manager.set_word_count_request("")
+                await ctx.send("✅ 已清除AI回复字数要求。", ephemeral=True)
+                await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"清除了AI字数要求 by {ctx.author} ({ctx.author.id})", ctx.author)
+            else:
+                await data_manager.set_word_count_request(requirement)
+                await ctx.send(f"✅ 已将AI回复字数要求设置为: `{requirement}`。", ephemeral=True)
+                await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"设置AI字数要求为 '{requirement}' by {ctx.author} ({ctx.author.id})", ctx.author)
 
     @commands.hybrid_command(name="管理", description="[主人] 管理工具合集，所有操作通过功能参数选择")
     @app_commands.describe(
@@ -125,27 +140,19 @@ class AdminCog(commands.Cog, name="管理工具"):
         amount="数量（仅积分操作需要）",
         points="设定新的总积分/爱意（仅签到数据操作需要）",
         consecutive_days="设定新的连续签到天数（仅签到数据操作需要）",
-        last_checkin_date="设定上次签到日 (格式: YYYY-MM-DD, 或输入 'reset' 清空)",
-        limit="每个频道最多收集多少条消息（仅爬取需要，0为全部）",
-        format="输出格式（仅爬取需要）"
+        last_checkin_date="设定上次签到日 (格式: YYYY-MM-DD, 或输入 'reset' 清空)"
     )
     @app_commands.choices(func=[
         app_commands.Choice(name="积分操作", value="points"),
-        app_commands.Choice(name="签到数据", value="checkin"),
-        app_commands.Choice(name="爬取发言", value="crawl")
+        app_commands.Choice(name="签到数据", value="checkin")
     ])
     @app_commands.choices(action=[
         app_commands.Choice(name="增加", value="增加"),
         app_commands.Choice(name="设定", value="设定"),
         app_commands.Choice(name="移除", value="移除")
     ])
-    @app_commands.choices(format=[
-        app_commands.Choice(name="简洁", value="简洁"),
-        app_commands.Choice(name="详细", value="详细"),
-        app_commands.Choice(name="向量化", value="向量化")
-    ])
     @commands.check(checks.is_owner)
-    async def manage(self, ctx: commands.Context, func: str, user: Optional[discord.User] = None, action: Optional[str] = None, amount: Optional[int] = None, points: Optional[int] = None, consecutive_days: Optional[int] = None, last_checkin_date: Optional[str] = None, limit: Optional[int] = 100, format: Optional[str] = "简洁"):
+    async def manage(self, ctx: commands.Context, func: str, user: Optional[discord.User] = None, action: Optional[str] = None, amount: Optional[int] = None, points: Optional[int] = None, consecutive_days: Optional[int] = None, last_checkin_date: Optional[str] = None):
         await ctx.defer(ephemeral=True)
         from utils import data_manager
         if func == "points":
@@ -164,7 +171,7 @@ class AdminCog(commands.Cog, name="管理工具"):
                 return
             p_data = data_manager.get_user_data(user.id) or {'points': 0, 'last_checkin_date': None, 'consecutive_days': 0}
             p_data['points'] = new_pts
-            data_manager.update_user_data(user.id, p_data)
+            await data_manager.update_user_data(user.id, p_data)
             await ctx.send(f"已将用户 {user.display_name} 的积分从 {orig_pts} 调整为 {new_pts}。", ephemeral=True)
         elif func == "checkin":
             if not user:
@@ -195,77 +202,8 @@ class AdminCog(commands.Cog, name="管理工具"):
                         await ctx.send("日期格式无效。请用YYYY-MM-DD或'reset'。", ephemeral=True); return
             if not changes:
                 await ctx.send("未指定任何修改项。", ephemeral=True); return
-            data_manager.update_user_data(user.id, p_data)
+            await data_manager.update_user_data(user.id, p_data)
             await ctx.send(f"用户 {user.display_name} 的签到数据已修改：{'，'.join(changes)}", ephemeral=True)
-        elif func == "crawl":
-            if not ctx.guild or not hasattr(ctx.guild, 'text_channels'):
-                await ctx.send("只能在服务器内使用该命令。", ephemeral=True)
-                return
-            history_limit = limit if (limit is not None and limit > 0) else None
-            progress_embed = discord.Embed(title="🕷️ 用户发言爬虫进度", description="正在收集用户发言数据...", color=discord.Color.blue())
-            progress_embed.add_field(name="状态", value="准备中...", inline=False)
-            progress_embed.add_field(name="进度", value="0%", inline=True)
-            progress_embed.add_field(name="已处理频道", value="0/" + str(len(ctx.guild.text_channels)), inline=True)
-            progress_embed.add_field(name="已收集消息", value="0", inline=True)
-            progress_embed.add_field(name="输出格式", value=format, inline=True)
-            progress_msg = await ctx.send(embed=progress_embed, ephemeral=True)
-            messages = []
-            total_channels = len(ctx.guild.text_channels)
-            processed_channels = 0
-            for channel in ctx.guild.text_channels:
-                try:
-                    processed_channels += 1
-                    progress = int((processed_channels / total_channels) * 100)
-                    progress_embed.description = f"正在扫描频道 #{channel.name}..."
-                    progress_embed.set_field_at(1, name="状态", value=f"扫描中: #{channel.name}", inline=False)
-                    progress_embed.set_field_at(2, name="进度", value=f"{progress}%", inline=True)
-                    progress_embed.set_field_at(3, name="已处理频道", value=f"{processed_channels}/{total_channels}", inline=True)
-                    progress_embed.set_field_at(4, name="已收集消息", value=str(len(messages)), inline=True)
-                    await progress_msg.edit(embed=progress_embed)
-                    async for msg in channel.history(limit=history_limit):
-                        if user and msg.author.id != user.id:
-                            continue
-                        if format == "简洁":
-                            msg_data = {"t": msg.content, "ts": int(msg.created_at.timestamp())}
-                        elif format == "详细":
-                            attachments = []
-                            if msg.attachments:
-                                for att in msg.attachments:
-                                    attachments.append({"type": "file", "name": att.filename, "url": att.url, "size": att.size})
-                            embeds = []
-                            if msg.embeds:
-                                for emb in msg.embeds:
-                                    embed_data = {}
-                                    if emb.title:
-                                        embed_data["title"] = emb.title
-                                    if emb.description:
-                                        embed_data["description"] = emb.description
-                                    if emb.image:
-                                        embed_data["image"] = emb.image.url
-                                    if embed_data:
-                                        embeds.append(embed_data)
-                            msg_data = {"c": channel.name, "t": msg.content, "ts": int(msg.created_at.timestamp())}
-                            if attachments:
-                                msg_data["a"] = attachments
-                            if embeds:
-                                msg_data["e"] = embeds
-                        else:
-                            msg_data = {"t": msg.content[:200] + "..." if len(msg.content) > 200 else msg.content, "l": len(msg.content), "ts": int(msg.created_at.timestamp()), "h": bool(msg.attachments or msg.embeds)}
-                        messages.append(msg_data)
-                        if len(messages) % 10 == 0:
-                            progress_embed.set_field_at(4, name="已收集消息", value=str(len(messages)), inline=True)
-                            await progress_msg.edit(embed=progress_embed)
-                except Exception:
-                    continue
-            if not messages:
-                progress_embed.description = "❌ 未找到该用户的发言记录"
-                progress_embed.color = discord.Color.red()
-                await progress_msg.edit(embed=progress_embed)
-                return
-            progress_embed.description = f"✅ 收集完成，共 {len(messages)} 条消息。"
-            progress_embed.color = discord.Color.green()
-            await progress_msg.edit(embed=progress_embed)
-            await ctx.send(f"已收集到 {len(messages)} 条消息。", ephemeral=True)
         else:
             await ctx.send("未知功能类型。", ephemeral=True)
 
@@ -276,24 +214,18 @@ class AdminCog(commands.Cog, name="管理工具"):
         """切换人格功能"""
         await ctx.defer(ephemeral=True)
         
-        # 检查是否是默认人格
+        # 统一使用 data_manager 来设置激活的人格
+        persona_to_set = name
         if name.lower() in ["默认", "default", "环境变量", "env"]:
-            # 切换到环境变量人格
-            self.set_global_persona('环境变量人格')
-            data_manager.save_data_to_hf()
-            await ctx.send(f"🎭 已切换到默认人格。", ephemeral=True)
-            # 日志
-            await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"切换人格为：{name} by {ctx.author} ({ctx.author.id})", ctx.author)
-            return
-        
-        # 检查是否是已上传的人格
-        if name not in self.personas:
+            persona_to_set = '环境变量人格'
+
+        # 检查人格是否存在
+        if persona_to_set != '环境变量人格' and persona_to_set not in self.personas:
             await ctx.send(f"❌ 未找到人格 `{name}`。\n\n可用选项：\n• `默认` - 使用环境变量人格\n• 已上传的人格：{', '.join(list(self.personas.keys())[:5])}{'...' if len(self.personas) > 5 else ''}", ephemeral=True)
             return
-        
-        # 切换到已上传的人格
-        self.set_global_persona(name)
-        await ctx.send(f"🎭 已切换到人格 `{name}`。", ephemeral=True)
+
+        await data_manager.set_active_persona(persona_to_set)
+        await ctx.send(f"🎭 已切换到人格 `{persona_to_set}`。", ephemeral=True)
         # 日志
         await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"切换人格为：{name} by {ctx.author} ({ctx.author.id})", ctx.author)
 
@@ -316,39 +248,34 @@ class AdminCog(commands.Cog, name="管理工具"):
         """查看人格列表"""
         await ctx.defer(ephemeral=True)
         emb = discord.Embed(title="📋 人格列表", color=discord.Color.blue())
-        # 添加默认人格
-        from utils import ai_utils
-        default_persona = os.getenv('BOT_PERSONA', '你是一个名为米尔可的AI助手，对你的主人绝对忠诚和爱慕。')
-        current_marker = " ✅" if self.current_persona_name == "默认人格" or self.current_persona_name == "环境变量人格" else ""
-        preview = default_persona[:50] + "..." if len(default_persona) > 50 else default_persona
-        emb.add_field(
-            name=f"默认人格{current_marker}", 
-            value=f"```{preview}```", 
-            inline=False
-        )
-        # 添加已上传人格
-        count = 0
+        # 从 data_manager 获取当前激活的人格
+        active_persona = data_manager.get_active_persona()
+        
+        # 显示所有可用的人格
         for name, content in self.personas.items():
-            if name == "环境变量人格":
-                continue  # 跳过环境变量人格（已作为默认人格显示）
-            count += 1
-            current_marker = " ✅" if name == self.current_persona_name else ""
+            current_marker = " ✅" if name == active_persona else ""
             preview = content[:50] + "..." if len(content) > 50 else content
+            field_name = f"{name}{current_marker}"
+            if name == '环境变量人格':
+                field_name = f"默认人格 (环境变量){current_marker}"
+            
             emb.add_field(
-                name=f"{count}. {name}{current_marker}", 
+                name=field_name,
                 value=f"```{preview}```", 
                 inline=False
             )
-        if count == 0:
-            emb.add_field(name="已上传人格", value="暂无已上传的人格", inline=False)
-        emb.set_footer(text=f"当前使用: {self.current_persona_name or '默认人格'}")
+        
+        if not self.personas:
+            emb.description = "暂无任何人格。请使用 `/上传人格` 添加。"
+            
+        emb.set_footer(text=f"当前使用: {active_persona or '未设置'}")
         await ctx.send(embed=emb, ephemeral=True)
 
     @commands.hybrid_command(name="风格", description="[主人] 切换AI风格。仅支持自定义上传/切换。")
     @app_commands.describe(style="风格内容")
     @commands.check(checks.is_owner)
     async def style(self, ctx: commands.Context, style: str):
-        data_manager.data["current_style"] = style
+        await data_manager.set_style(style) # 假设你会在data_manager中创建一个set_style的异步函数
         await ctx.send(f"🎨 已切换到新风格。", ephemeral=True)
 
     @commands.hybrid_command(name="屏蔽词", description="[主人] 管理屏蔽词，所有操作通过操作参数选择")
@@ -373,7 +300,7 @@ class AdminCog(commands.Cog, name="管理工具"):
             added = []
             for w in words:
                 if w and w not in data_manager.get_filtered_words():
-                    data_manager.add_filtered_word(w)
+                    await data_manager.add_filtered_word(w)
                     added.append(w)
             if added:
                 await ctx.send(f"✅ 已添加屏蔽词：{', '.join(added)}", ephemeral=True)
@@ -388,7 +315,7 @@ class AdminCog(commands.Cog, name="管理工具"):
             removed = []
             for w in words:
                 if w in data_manager.get_filtered_words():
-                    data_manager.remove_filtered_word(w)
+                    await data_manager.remove_filtered_word(w)
                     removed.append(w)
             if removed:
                 await ctx.send(f"✅ 已移除屏蔽词：{', '.join(removed)}", ephemeral=True)
@@ -398,7 +325,7 @@ class AdminCog(commands.Cog, name="管理工具"):
         elif action == "clear":
             words = list(data_manager.get_filtered_words())
             for w in words:
-                data_manager.remove_filtered_word(w)
+                await data_manager.remove_filtered_word(w)
             await ctx.send("✅ 已清空所有屏蔽词。", ephemeral=True)
             await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"清空所有屏蔽词 by {ctx.author} ({ctx.author.id})", ctx.author)
         elif action == "list":
@@ -440,7 +367,7 @@ class AdminCog(commands.Cog, name="管理工具"):
         app_commands.Choice(name="删除全局日志", value="global")
     ])
     @commands.check(checks.is_owner)
-    async def log(self, ctx: commands.Context, type: str, guild: Optional[discord.Guild] = None, channel: Optional[discord.TextChannel] = None, log_type: Optional[str] = None, message: Optional[str] = None):
+    async def log(self, ctx: commands.Context, type: str, guild: Optional[discord.abc.GuildChannel] = None, channel: Optional[discord.TextChannel] = None, log_type: Optional[str] = None, message: Optional[str] = None):
         await ctx.defer(ephemeral=True)
         from utils import data_manager
         if type == "set":
@@ -457,7 +384,7 @@ class AdminCog(commands.Cog, name="管理工具"):
             if log_type == "global":
                 all_log_types = ["system", "user_activity", "error", "ai_chat", "admin"]
                 global_config = {lt: channel.id for lt in all_log_types}
-                data_manager.set_global_logging_config(global_config)
+                await data_manager.set_global_logging_config(global_config)
                 emb = discord.Embed(title="✅ 全局日志频道设置成功", color=discord.Color.green())
                 emb.add_field(name="服务器", value=f"{guild.name} ({guild.id})", inline=True)
                 emb.add_field(name="频道", value=f"#{channel.name} ({channel.id})", inline=True)
@@ -467,10 +394,10 @@ class AdminCog(commands.Cog, name="管理工具"):
                 return
             elif log_type == "all":
                 all_log_types = ["system", "user_activity", "error", "ai_chat", "admin"]
-                data_manager.set_logging_config(guild.id, channel.id, all_log_types)
+                await data_manager.set_logging_config(guild.id, channel.id, all_log_types)
             else:
                 current_config[log_type] = channel.id
-                data_manager.set_logging_config(guild.id, channel.id, list(current_config.keys()))
+                await data_manager.set_logging_config(guild.id, channel.id, list(current_config.keys()))
             emb = discord.Embed(title="✅ 日志频道设置成功", color=discord.Color.green())
             emb.add_field(name="服务器", value=f"{guild.name} ({guild.id})", inline=True)
             emb.add_field(name="频道", value=f"#{channel.name} ({channel.id})", inline=True)
@@ -544,7 +471,7 @@ class AdminCog(commands.Cog, name="管理工具"):
                 await ctx.send("请提供日志类型。", ephemeral=True)
                 return
             if log_type == "global":
-                data_manager.set_global_logging_config({})
+                await data_manager.set_global_logging_config({})
                 emb = discord.Embed(title="✅ 全局日志配置删除成功", color=discord.Color.green())
                 emb.add_field(name="操作", value="已删除全局日志配置", inline=True)
                 emb.set_footer(text=f"操作者: {ctx.author.display_name}")
@@ -555,7 +482,7 @@ class AdminCog(commands.Cog, name="管理工具"):
                 await ctx.send("❌ 该服务器没有配置日志频道。", ephemeral=True)
                 return
             if log_type == "all":
-                data_manager.remove_logging_config(guild.id)
+                await data_manager.remove_logging_config(guild.id)
                 await ctx.send(f"✅ 已删除服务器 {guild.name} 的所有日志配置。", ephemeral=True)
                 return
             if log_type in config:
@@ -564,10 +491,10 @@ class AdminCog(commands.Cog, name="管理工具"):
                     # 还有其他日志类型，取第一个频道ID（所有类型都指向同一频道）
                     remaining_channel_id = list(config.values())[0]
                     remaining_log_types = list(config.keys())
-                    data_manager.set_logging_config(guild.id, remaining_channel_id, remaining_log_types)
+                    await data_manager.set_logging_config(guild.id, remaining_channel_id, remaining_log_types)
                     await ctx.send(f"✅ 已删除 {guild.name} 的 {log_type} 日志配置。", ephemeral=True)
                 else:
-                    data_manager.remove_logging_config(guild.id)
+                    await data_manager.remove_logging_config(guild.id)
                     await ctx.send(f"✅ 已删除服务器 {guild.name} 的所有日志配置。", ephemeral=True)
             else:
                 await ctx.send("❌ 未找到该日志类型的配置。", ephemeral=True)
@@ -778,10 +705,150 @@ class AdminCog(commands.Cog, name="管理工具"):
         if not name or not content:
             await ctx.send("❌ 人格名称和内容不能为空。", ephemeral=True)
             return
-        data_manager.set_persona(name, content)
+        await data_manager.set_persona(name, content)
         self.personas = data_manager.get_personas()
         await ctx.send(f"✅ 已上传人格 `{name}`，可用 /人格 命令切换。", ephemeral=True)
         await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"上传人格：{name} by {ctx.author} ({ctx.author.id})", ctx.author)
+
+    @commands.hybrid_group(name="授权", description="[主人] 管理可以与机器人对话的用户")
+    @commands.check(checks.is_owner)
+    async def authorize(self, ctx: commands.Context):
+        if ctx.invoked_subcommand is None:
+            await ctx.send("请选择一个子命令: `添加`, `移除`, 或 `列表`。", ephemeral=True)
+
+    @authorize.command(name="添加", description="[主人] 授权一个用户与机器人对话")
+    @app_commands.describe(user="要授权的用户")
+    async def authorize_add(self, ctx: commands.Context, user: discord.User):
+        await ctx.defer(ephemeral=True)
+        private_chat_users = data_manager.get_private_chat_users()
+        if user.id in private_chat_users:
+            await ctx.send(f"用户 {user.display_name} 已被授权。", ephemeral=True)
+        else:
+            private_chat_users.append(user.id)
+            data_manager.data["private_chat_users"] = private_chat_users
+            await data_manager.save_data_to_hf()
+            await ctx.send(f"✅ 已授权用户 {user.display_name} 与机器人对话。", ephemeral=True)
+            await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"授权用户: {user.display_name} ({user.id}) by {ctx.author} ({ctx.author.id})", ctx.author)
+
+    @authorize.command(name="移除", description="[主人] 取消一个用户的对话授权")
+    @app_commands.describe(user="要取消授权的用户")
+    async def authorize_remove(self, ctx: commands.Context, user: discord.User):
+        await ctx.defer(ephemeral=True)
+        private_chat_users = data_manager.get_private_chat_users()
+        if user.id not in private_chat_users:
+            await ctx.send(f"用户 {user.display_name} 未被授权。", ephemeral=True)
+        else:
+            private_chat_users.remove(user.id)
+            data_manager.data["private_chat_users"] = private_chat_users
+            await data_manager.save_data_to_hf()
+            await ctx.send(f"✅ 已取消用户 {user.display_name} 的对话授权。", ephemeral=True)
+            await self.send_log(ctx.guild.id if ctx.guild else 0, "admin", f"取消授权用户: {user.display_name} ({user.id}) by {ctx.author} ({ctx.author.id})", ctx.author)
+
+    @authorize.command(name="列表", description="[主人] 查看所有已授权的用户")
+    async def authorize_list(self, ctx: commands.Context):
+        await ctx.defer(ephemeral=True)
+        private_chat_users = data_manager.get_private_chat_users()
+        if not private_chat_users:
+            await ctx.send("目前没有授权任何用户。", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="👑 已授权用户列表", color=discord.Color.gold())
+        user_mentions = []
+        for user_id in private_chat_users:
+            try:
+                user = await self.bot.fetch_user(user_id)
+                user_mentions.append(f"• {user.display_name} (`{user.id}`)")
+            except discord.NotFound:
+                user_mentions.append(f"• 未知用户 (`{user_id}`)")
+        
+        embed.description = "\n".join(user_mentions)
+        await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.hybrid_command(name="手动描述表情", description="[主人] 手动为指定的表情添加或更新描述。")
+    @app_commands.describe(
+        emoji="要描述的表情",
+        description="为表情设置的描述文本"
+    )
+    @commands.check(checks.is_owner)
+    async def describe_emoji(self, ctx: commands.Context, emoji: discord.Emoji, description: str):
+        """手动为表情添加或更新描述。"""
+        await ctx.defer(ephemeral=True)
+        
+        success = emoji_manager.update_emoji_description(emoji.id, description)
+        
+        if success:
+            await ctx.send(f"✅ 成功将表情 {emoji} 的描述更新为：`{description}`", ephemeral=True)
+        else:
+            # 这种情况通常发生在表情不在机器人的任何服务器中
+            await ctx.send(f"❌ 更新失败！机器人似乎无法访问表情 {emoji}。请确保它是一个自定义表情，并且机器人在其所在的服务器中。", ephemeral=True)
+
+    @commands.hybrid_command(name="生成表情描述", description="[主人] 使用AI为当前服务器的表情生成描述。")
+    @commands.check(checks.is_owner)
+    async def generate_emoji_descriptions(self, ctx: commands.Context):
+        """使用AI为当前服务器的表情生成描述，并在当前频道显示进度。"""
+        if not ctx.guild:
+            await ctx.send("❌ 此命令只能在服务器中使用。", ephemeral=True)
+            return
+
+        # 先发送一个确认消息，告知任务已开始
+        await ctx.send(f"✅ 收到请求！即将开始为服务器 **{ctx.guild.name}** 的表情生成AI描述...", ephemeral=True)
+
+        # 创建并发送初始的嵌入式消息
+        embed = discord.Embed(
+            title=f"🎨 表情AI描述生成任务",
+            description=f"正在初始化，请稍候...",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"由 {ctx.author.display_name} 发起")
+        progress_message = await ctx.channel.send(embed=embed)
+
+        # --- 定义回调函数 ---
+        async def on_progress(current, total, name):
+            embed.title = f"🎨 表情AI描述生成中..."
+            embed.description = f"正在处理: **{name}**"
+            embed.color = discord.Color.gold()
+            embed.clear_fields()
+            embed.add_field(name="进度", value=f"**{current} / {total}**", inline=True)
+            await progress_message.edit(embed=embed)
+
+        async def on_completion(processed_count, total_emojis):
+            embed.title = f"✅ 任务完成"
+            embed.description = f"成功为 **{processed_count}** 个新表情生成了描述。"
+            embed.color = discord.Color.green()
+            embed.clear_fields()
+            embed.add_field(name="服务器表情总数", value=str(total_emojis), inline=True)
+            embed.add_field(name="本次处理数", value=str(processed_count), inline=True)
+            await progress_message.edit(embed=embed)
+
+        async def on_no_work():
+            embed.title = f"ℹ️ 无需处理"
+            embed.description = "这个服务器的所有表情都已经拥有AI描述了。"
+            embed.color = discord.Color.dark_grey()
+            await progress_message.edit(embed=embed)
+
+        async def on_error(error_msg):
+            # 可以在这里添加更复杂的错误处理，比如将错误记录到一个字段里
+            embed.add_field(name="⚠️ 处理错误", value=error_msg, inline=False)
+            await progress_message.edit(embed=embed)
+
+        # --- 调用核心逻辑 ---
+        try:
+            await emoji_manager.generate_descriptions_for_guild(
+                guild_id=ctx.guild.id,
+                on_progress=on_progress,
+                on_completion=on_completion,
+                on_no_work=on_no_work,
+                on_error=on_error
+            )
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ 发生致命错误",
+                description=f"执行表情描述生成时发生意外错误: {e}",
+                color=discord.Color.red()
+            )
+            await progress_message.edit(embed=error_embed)
+            print(f"Fatal error during generate_emoji_descriptions: {e}")
+
 
 async def setup(bot: commands.Bot):
     """将此 Cog 添加到机器人中"""

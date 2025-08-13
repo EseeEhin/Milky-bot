@@ -10,16 +10,24 @@ import asyncio
 
 # 全局数据字典
 data = {
-    "user_data": {},        # 积分/签到等, key: user_id
-    "autoreact_map": {},    # 自动反应, key: user_id
-    "private_chat_users": [], # 私聊权限, list of user_id
-    "conversation_history": {}, # 对话历史, key: channel_id-user_id
-    "logging_config": {},   # 日志配置, key: server_id -> {log_type: channel_id}
-    "global_logging_config": {}, # 全局日志配置, {log_type: channel_id}
-    "filtered_words": [],   # 屏蔽词列表
-    "autoreact_rules": {},   # 自动反应规则, key: server_id -> {trigger: reaction}
-    "short_reply_mode": False, # 短篇幅模式开关
-    "personas": {}, # AI人格数据
+    "user_data": {},
+    "autoreact_map": {},
+    "private_chat_users": [],
+    "conversation_history": {},
+    "logging_config": {},
+    "global_logging_config": {},
+    "filtered_words": [],
+    "autoreact_rules": {},
+    "short_reply_mode": False,
+    "personas": {},
+    "bot_mode": "chat",
+    "system_prompt": "",
+    "start_prompt": "",
+    "end_prompt": "",
+    "active_persona": "",
+    "word_count_request": "",
+    "heat_mode": False,
+    "global_memory_log": [],
 }
 
 HF_TOKEN = os.getenv('HF_TOKEN')
@@ -42,19 +50,19 @@ def load_data_from_hf():
     try:
         print(f"  ⏳ 正在尝试从 Hugging Face Hub 下载数据文件: '{DATA_FILENAME}'...")
         local_path = hf_hub_download(repo_id=HF_DATA_REPO_ID, filename=DATA_FILENAME, repo_type="dataset", token=HF_TOKEN)
+        
         with open(local_path, 'r', encoding='utf-8') as f:
             loaded_data = json.load(f)
-            data["user_data"] = {int(k): v for k, v in loaded_data.get("user_data", {}).items()}
-            data["autoreact_map"] = {int(k): v for k, v in loaded_data.get("autoreact_map", {}).items()}
-            data["private_chat_users"] = loaded_data.get("private_chat_users", [])
-            data["conversation_history"] = loaded_data.get("conversation_history", {})
-            data["logging_config"] = loaded_data.get("logging_config", {})
-            data["global_logging_config"] = loaded_data.get("global_logging_config", {})
-            data["filtered_words"] = loaded_data.get("filtered_words", [])
-            data["autoreact_rules"] = loaded_data.get("autoreact_rules", {})
-            data["short_reply_mode"] = loaded_data.get("short_reply_mode", False)
-            data["personas"] = loaded_data.get("personas", {})
-        print(f"  ✔️ 数据成功从 Hub 加载。")
+
+        current_data_for_comparison = {key: data[key] for key in loaded_data.keys() if key in data}
+        if loaded_data == current_data_for_comparison:
+            print("  ✔️ 数据与云端一致，跳过同步。")
+            return
+
+        data.update(loaded_data)
+        data["user_data"] = {int(k): v for k, v in data.get("user_data", {}).items()}
+        data["autoreact_map"] = {int(k): v for k, v in data.get("autoreact_map", {}).items()}
+        print(f"  ✔️ 数据已从云端更新。")
     except HfHubHTTPError as e:
         if e.response.status_code == 404:
             print(f"  ⚠️ 数据文件 '{DATA_FILENAME}' 在仓库中未找到。将以空数据启动。")
@@ -66,25 +74,16 @@ def load_data_from_hf():
         print(f"  ❌ 从 Hub 加载数据时发生未知错误: {e}")
     print("---------------------------------")
 
-def save_data_to_hf():
+async def save_data_to_hf():
     if not HF_TOKEN or not HF_DATA_REPO_ID or HF_DATA_REPO_ID == "SETUP_YOUR_HF_DATA_REPO_ID_ENV_VAR":
         return
 
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, f"temp_upload_{DATA_FILENAME}")
     
-    data_to_save = {
-        "user_data": {str(k): v for k, v in data["user_data"].items()},
-        "autoreact_map": {str(k): v for k, v in data["autoreact_map"].items()},
-        "private_chat_users": data["private_chat_users"],
-        "conversation_history": data["conversation_history"],
-        "logging_config": data["logging_config"],
-        "global_logging_config": data["global_logging_config"],
-        "filtered_words": data["filtered_words"],
-        "autoreact_rules": data["autoreact_rules"],
-        "short_reply_mode": data["short_reply_mode"],
-        "personas": data["personas"]
-    }
+    data_to_save = data.copy()
+    data_to_save["user_data"] = {str(k): v for k, v in data["user_data"].items()}
+    data_to_save["autoreact_map"] = {str(k): v for k, v in data["autoreact_map"].items()}
     
     try:
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -107,116 +106,150 @@ def save_data_to_hf():
 def get_user_data(user_id: int):
     return data["user_data"].get(user_id)
 
-def update_user_data(user_id: int, new_data: dict):
+async def update_user_data(user_id: int, new_data: dict):
     data["user_data"][user_id] = new_data
-    save_data_to_hf()
+    await save_data_to_hf()
     
-def get_autoreact_map():
-    return data["autoreact_map"]
-
 def get_private_chat_users():
     return data["private_chat_users"]
 
 def get_conversation_history(key: str):
     return data["conversation_history"].get(key, [])
 
-def update_conversation_history(key: str, history: list):
+async def update_conversation_history(key: str, history: list):
     data["conversation_history"][key] = history
-    save_data_to_hf()
+    await save_data_to_hf()
 
-# --- 新增的持久化数据访问接口 ---
 def get_logging_config(server_id: int):
-    """获取服务器的日志配置"""
     return data["logging_config"].get(str(server_id))
 
-def set_logging_config(server_id: int, channel_id: int, log_types: list):
-    """设置服务器的日志配置"""
+async def set_logging_config(server_id: int, channel_id: int, log_types: list):
     config = {}
     for log_type in log_types:
         config[log_type] = channel_id
     data["logging_config"][str(server_id)] = config
-    save_data_to_hf()
+    await save_data_to_hf()
 
-def remove_logging_config(server_id: int):
-    """移除服务器的日志配置"""
+async def remove_logging_config(server_id: int):
     if str(server_id) in data["logging_config"]:
         del data["logging_config"][str(server_id)]
-        save_data_to_hf()
+        await save_data_to_hf()
 
 def get_all_logging_configs():
-    """获取所有日志配置"""
     return data["logging_config"]
 
 def get_global_logging_config():
-    """获取全局日志配置"""
     return data["global_logging_config"]
 
-def set_global_logging_config(log_types: dict):
-    """设置全局日志配置"""
+async def set_global_logging_config(log_types: dict):
     data["global_logging_config"] = log_types
-    save_data_to_hf()
+    await save_data_to_hf()
 
 def get_filtered_words():
-    """获取屏蔽词列表"""
     return data["filtered_words"]
 
-def add_filtered_word(word: str):
-    """添加屏蔽词"""
+async def add_filtered_word(word: str):
     if word not in data["filtered_words"]:
         data["filtered_words"].append(word)
-        save_data_to_hf()
+        await save_data_to_hf()
 
-def remove_filtered_word(word: str):
-    """移除屏蔽词"""
+async def remove_filtered_word(word: str):
     if word in data["filtered_words"]:
         data["filtered_words"].remove(word)
-        save_data_to_hf()
-
-def get_autoreact_rules(server_id: int):
-    """获取服务器的自动反应规则"""
-    return data["autoreact_rules"].get(str(server_id), {})
-
-def set_autoreact_rules(server_id: int, rules: dict):
-    """设置服务器的自动反应规则"""
-    data["autoreact_rules"][str(server_id)] = rules
-    save_data_to_hf()
-
-def add_autoreact_rule(server_id: int, trigger: str, reaction: str):
-    """添加自动反应规则"""
-    server_id_str = str(server_id)
-    if server_id_str not in data["autoreact_rules"]:
-        data["autoreact_rules"][server_id_str] = {}
-    data["autoreact_rules"][server_id_str][trigger] = reaction
-    save_data_to_hf()
-
-def remove_autoreact_rule(server_id: int, trigger: str):
-    """移除自动反应规则"""
-    server_id_str = str(server_id)
-    if server_id_str in data["autoreact_rules"] and trigger in data["autoreact_rules"][server_id_str]:
-        del data["autoreact_rules"][server_id_str][trigger]
-        save_data_to_hf()
-
-def get_all_autoreact_rules():
-    """获取所有自动反应规则"""
-    return data["autoreact_rules"]
+        await save_data_to_hf()
 
 def get_short_reply_mode():
     return data.get("short_reply_mode", False)
 
-def set_short_reply_mode(state: bool):
+async def set_short_reply_mode(state: bool):
     data["short_reply_mode"] = state
-    save_data_to_hf()
+    await save_data_to_hf()
 
 def get_personas():
     return data["personas"]
 
-def set_persona(name: str, content: str):
+async def set_persona(name: str, content: str):
     data["personas"][name] = content
-    save_data_to_hf()
+    await save_data_to_hf()
 
-def remove_persona(name: str):
+async def remove_persona(name: str):
     if name in data["personas"]:
         del data["personas"][name]
-        save_data_to_hf()
+        await save_data_to_hf()
+
+def get_bot_mode():
+    return data.get("bot_mode", "chat")
+
+async def set_bot_mode(mode: str):
+    data["bot_mode"] = mode
+    await save_data_to_hf()
+
+def get_system_prompt():
+    return data.get("system_prompt", "")
+
+async def set_system_prompt(prompt: str):
+    data["system_prompt"] = prompt
+    await save_data_to_hf()
+
+def get_start_prompt():
+    return data.get("start_prompt", "")
+
+async def set_start_prompt(prompt: str):
+    data["start_prompt"] = prompt
+    await save_data_to_hf()
+
+def get_end_prompt():
+    return data.get("end_prompt", "")
+
+async def set_end_prompt(prompt: str):
+    data["end_prompt"] = prompt
+    await save_data_to_hf()
+
+def get_active_persona():
+    return data.get("active_persona", "")
+
+async def set_active_persona(persona_name: str):
+    data["active_persona"] = persona_name
+    await save_data_to_hf()
+
+def get_word_count_request():
+    return data.get("word_count_request", "")
+
+async def set_word_count_request(request: str):
+    data["word_count_request"] = request
+    await save_data_to_hf()
+
+def get_heat_mode():
+    return data.get("heat_mode", False)
+
+async def set_heat_mode(state: bool):
+    data["heat_mode"] = state
+    await save_data_to_hf()
+
+def get_global_memory_log():
+    """获取全局记忆日志"""
+    return data.get("global_memory_log", [])
+
+async def add_to_global_memory(user_id: int, user_name: str, message: str, bot_reply: str):
+    """向全局记忆日志中添加一条记录，并自动修剪旧记录"""
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_id": user_id,
+        "user_name": user_name,
+        "message": message,
+        "bot_reply": bot_reply
+    }
+    
+    memory_log = data.get("global_memory_log", [])
+    memory_log.append(log_entry)
+    
+    # 限制日志大小，只保留最新的50条
+    MAX_MEMORY_LOG_SIZE = 50
+    if len(memory_log) > MAX_MEMORY_LOG_SIZE:
+        data["global_memory_log"] = memory_log[-MAX_MEMORY_LOG_SIZE:]
+    else:
+        data["global_memory_log"] = memory_log
+        
+    await save_data_to_hf()
 
 os.environ["HF_HOME"] = "/tmp/hf_cache"
